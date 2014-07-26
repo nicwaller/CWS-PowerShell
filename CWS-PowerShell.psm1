@@ -1,4 +1,53 @@
-#Set-StrictMode -version 2
+Set-StrictMode -version 2
+
+function Invoke-CWSRequest {
+<#
+.SYNOPSIS
+Send a SOAP request to execute a function and return the result. Use this AFTER opening a session.
+#>
+[CmdletBinding()]
+param
+(
+  [Parameter(Mandatory=$True)]
+  [String] $Action,
+
+  [System.Collections.Hashtable] $Arguments = @{}
+)
+begin {
+  $SoapTemplate = @'
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+ <soap:Body>
+  <${Action} xmlns="http://cherwellsoftware.com">
+   ${ArgStr}
+  </${Action}>
+ </soap:Body>
+</soap:Envelope>
+'@
+
+  $uri = $CWSSession.Uri
+
+  #TODO I could even use this for the login part, with a bit of modification.
+  if ($CWSSession -eq $null) {
+    Write-Error "Must open session before invoking request."
+    return $null
+  }
+  $WebSession = $CWSSession.SOAPSession
+
+  $ArgStr = $Arguments.GetEnumerator() | %{"<{0}>{1}</{0}>`n" -f $_.key,$_.Value}
+  $RequestParams = @{
+    'WebSession'=$WebSession;
+    'Uri'=$Uri;
+    'Method'='POST';
+    'Headers'=@{SOAPAction="http://cherwellsoftware.com/${Action}"};
+    'ContentType'='text/xml';
+    'Body'=$ExecutionContext.InvokeCommand.ExpandString($SoapTemplate)
+  }
+
+  $Result = Invoke-WebRequest @RequestParams
+  Write-Output (([xml]$Result.Content) | Select-Xml("/*/*/*/*")).Node."#text"
+}
+} # end
 
 function Open-CWSSession {
 <#
@@ -37,7 +86,6 @@ begin {
 
 # TODO actually check login result instead of assuming a successful authentication
 
-  $sess = New-Object -TypeName PSObject -Prop @{Session=$session;Uri=$uri}
   Set-Variable CWSSession -Scope Global -Value (New-Object -TypeName PSObject -Property @{
     Uri=$uri;
     SOAPSession=$SOAPSession
@@ -45,7 +93,6 @@ begin {
   return $CWSSession
 }
 } # the end
-
 
 function Close-CWSSession {
 <#
@@ -57,30 +104,12 @@ param
 (
 )
 begin {
-  if ($CWSSession -eq $null) {
-    return
-  }
-
-  $uri = $CWSSession.Uri
-  $headers = @{SOAPAction="http://cherwellsoftware.com/Logout"}
-
-  Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -SessionVariable SOAPSession -Body @"
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
- <soap:Body>
-  <Logout xmlns="http://cherwellsoftware.com">
-  </Logout>
- </soap:Body>
-</soap:Envelope>
-"@ | Out-Null
-
-# TODO actually check logout result instead of assuming success
-
+  $result = Invoke-CWSRequest -Action Logout
+  Write-Host -Fore Yellow Logout = $result
+  # TODO actually check logout result instead of assuming success
   Set-Variable CWSSession -Scope Global -Value $null
-
 }
 } # the end
-
 
 function Find-CWSBusinessObject {
 <#
@@ -103,29 +132,9 @@ param
   [String] $Value
 )
 begin {
-  if ($CWSSession -eq $null) {
-    Write-Error "login!"
-  }
-  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
-  $uri = $CWSSession.Uri
+  $result = Invoke-CWSRequest -Action QueryByFieldValue -Arguments @{'busObNameOrId'=$BusinessObject;'fieldNameOrId'=$FieldName;'value'=$Value}
 
-$headers = @{SOAPAction="http://cherwellsoftware.com/QueryByFieldValue"}
-$response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -WebSession $sess -Body @"
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <QueryByFieldValue xmlns="http://cherwellsoftware.com">
-      <busObNameOrId>${BusinessObject}</busObNameOrId>
-      <fieldNameOrId>${FieldName}</fieldNameOrId>
-      <value>${Value}</value>
-    </QueryByFieldValue>
-  </soap:Body>
-</soap:Envelope>
-"@
-$xResponse = [xml] $response
-$xChildren = $xResponse | Select-Xml("/*/*/*/*")
-
-$xDeepResponse = [xml] $xChildren.node."#text"
+  $xDeepResponse = [xml] $result
 if ($xDeepResponse -eq $null) {
  return $null
 }
@@ -140,7 +149,6 @@ $xDeepChildren |
       'PublicID'=$_.Node."#text";
     }
   }
-
 
 }
 } #the end
@@ -163,28 +171,9 @@ param
   [String] $QueryName
 )
 begin {
-  if ($CWSSession -eq $null) {
-    Write-Error "login!"
-  }
-  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
-  $uri = $CWSSession.uri
+  $result = Invoke-CWSRequest -Action QueryByStoredQuery -Arguments @{'busObNameOrId'=$BusinessObject;'queryNameOrId'=$QueryName}
 
-$headers = @{SOAPAction="http://cherwellsoftware.com/QueryByStoredQuery"}
-$response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -WebSession $sess -Body @"
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <QueryByStoredQuery xmlns="http://cherwellsoftware.com">
-      <busObNameOrId>${BusinessObject}</busObNameOrId>
-      <queryNameOrId>${QueryName}</queryNameOrId>
-    </QueryByStoredQuery>
-  </soap:Body>
-</soap:Envelope>
-"@
-$xResponse = [xml] $response
-$xChildren = $xResponse | Select-Xml("/*/*/*/*")
-
-$xDeepResponse = [xml] $xChildren.node."#text"
+$xDeepResponse = [xml] $result
 if ($xDeepResponse -eq $null) {
  return $null
 }
@@ -249,32 +238,18 @@ process {
     }
   }
 
-$headers = @{SOAPAction="http://cherwellsoftware.com/GetBusinessObject"}
-$response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -WebSession $sess -Body @"
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <GetBusinessObject xmlns="http://cherwellsoftware.com">
-      <busObNameOrId>${BusinessObject}</busObNameOrId>
-      <busObRecId>${RecID}</busObRecId>
-    </GetBusinessObject>
+  $result = Invoke-CWSRequest -Action GetBusinessObject -Arguments @{'busObNameOrId'=$BusinessObject;'busObRecId'=$RecID}
 
-  </soap:Body>
-</soap:Envelope>
-"@
-$xResponse = [xml] $response
-$xChildren = $xResponse | Select-Xml("/*/*/*/*")
-
-$xDeepResponse = [xml] $xChildren.node."#text"
+$xDeepResponse = [xml] $result
 if ($xDeepResponse -eq $null) {
  return $null
 }
-$xDeepChildren = $xDeepResponse | Select-Xml("/*/*")
 
 $r = New-Object -TypeName PSObject
 $xDeepResponse |
   Select-Xml("/BusinessObject/FieldList/Field") |
-  ForEach-Object {$r | Add-Member -MemberType NoteProperty -Name $_.Node.Name -Value $_.Node."#text"}
+  Where-Object {$_.Node.PSObject.Properties.Match('#text').Count} |
+  ForEach-Object {$r | Add-Member -MemberType NoteProperty -Name $_.Node.Name -Value $_.Node."#text" }
 $r | Export-Clixml $CacheFile
 $r
 
