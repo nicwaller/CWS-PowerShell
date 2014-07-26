@@ -1,3 +1,5 @@
+#Set-StrictMode -version 2
+
 function Open-CWSSession {
 <#
 .SYNOPSIS
@@ -132,9 +134,10 @@ $xDeepChildren = $xDeepResponse | Select-Xml("/*/*")
 $xDeepChildren |
   % {
     New-Object -TypeName PSObject -Prop @{
-      'ID'=$_.Node."#text";
-      'RecordID'=$_.Node.RecId;
+      'Type'=$BusinessObject;
       'TypeID'=$_.Node.TypeId;
+      'RecID'=$_.Node.RecId;
+      'PublicID'=$_.Node."#text";
     }
   }
 
@@ -216,7 +219,11 @@ param
   [String] $BusinessObject = "Incident",
 
   [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)]
-  [String] $RecordID
+  [String] $RecID,
+
+  [Switch]$RefreshCache,
+
+  $RefreshIntervalHours = 3.0
 )
 begin {
   if ($CWSSession -eq $null) {
@@ -224,8 +231,23 @@ begin {
   }
   [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
   $uri = $CWSSession.uri
+
+  $CacheDir = "${env:Temp}\CWSCache"
+  if ((get-item "${env:Temp}\CWSCache") -eq $null) {
+    New-Item "${env:Temp}\CWSCache" -Type directory
+  }
 }
 process {
+  $CacheFile = "${CacheDir}\${RecID}.xml"
+  if (Test-Path $CacheFile) {
+    $LastUpdate = (Get-Item $CacheFile).LastWriteTime
+    $AgeHours = ((Get-Date) - $LastUpdate).TotalHours
+    if ($RefreshCache -or ($AgeHours -gt $RefreshIntervalHours)) {
+      Remove-Item $CacheFile
+    } else {
+      return (Import-Clixml $CacheFile)
+    }
+  }
 
 $headers = @{SOAPAction="http://cherwellsoftware.com/GetBusinessObject"}
 $response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -WebSession $sess -Body @"
@@ -234,7 +256,7 @@ $response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentT
   <soap:Body>
     <GetBusinessObject xmlns="http://cherwellsoftware.com">
       <busObNameOrId>${BusinessObject}</busObNameOrId>
-      <busObRecId>${RecordID}</busObRecId>
+      <busObRecId>${RecID}</busObRecId>
     </GetBusinessObject>
 
   </soap:Body>
@@ -253,6 +275,7 @@ $r = New-Object -TypeName PSObject
 $xDeepResponse |
   Select-Xml("/BusinessObject/FieldList/Field") |
   ForEach-Object {$r | Add-Member -MemberType NoteProperty -Name $_.Node.Name -Value $_.Node."#text"}
+$r | Export-Clixml $CacheFile
 $r
 
 }
