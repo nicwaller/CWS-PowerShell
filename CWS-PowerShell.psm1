@@ -1,4 +1,4 @@
-function Open-CherwellSession {
+function Open-CWSSession {
 <#
 .SYNOPSIS
 Execute the login action to open a session.
@@ -14,10 +14,14 @@ param
   [String] $Server
 )
 begin {
-  $uri = "https://${server}/cherwellservice/api.asmx"
+  if ($CWSSession -ne $null) {
+    return $CWSSession
+  }
 
+  $uri = "https://${server}/cherwellservice/api.asmx"
   $headers = @{SOAPAction="http://cherwellsoftware.com/Login"}
-  Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -SessionVariable session -Body @"
+
+  Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -SessionVariable SOAPSession -Body @"
 <?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
 <soap:Body>
@@ -32,12 +36,51 @@ begin {
 # TODO actually check login result instead of assuming a successful authentication
 
   $sess = New-Object -TypeName PSObject -Prop @{Session=$session;Uri=$uri}
-  return $sess
+  Set-Variable CWSSession -Scope Global -Value (New-Object -TypeName PSObject -Property @{
+    Uri=$uri;
+    SOAPSession=$SOAPSession
+  })
+  return $CWSSession
 }
 } # the end
 
 
-function Find-CherwellObject {
+function Close-CWSSession {
+<#
+.SYNOPSIS
+Execute the logout action to close a session.
+#>
+[CmdletBinding()]
+param
+(
+)
+begin {
+  if ($CWSSession -eq $null) {
+    return
+  }
+
+  $uri = $CWSSession.Uri
+  $headers = @{SOAPAction="http://cherwellsoftware.com/Logout"}
+
+  Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -SessionVariable SOAPSession -Body @"
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+ <soap:Body>
+  <Logout xmlns="http://cherwellsoftware.com">
+  </Logout>
+ </soap:Body>
+</soap:Envelope>
+"@ | Out-Null
+
+# TODO actually check logout result instead of assuming success
+
+  Set-Variable CWSSession -Scope Global -Value $null
+
+}
+} # the end
+
+
+function Find-CWSBusinessObject {
 <#
 .SYNOPSIS
 Find a business object using an exact-match query. This is NOT a substring match.
@@ -55,14 +98,14 @@ param
   [String] $FieldName,
 
   [Parameter(Mandatory=$True)]
-  [String] $Value,
-
-  [Parameter(Mandatory=$True)]
-  $Session
+  [String] $Value
 )
 begin {
-  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $Session.session
-  $uri = $session.uri
+  if ($CWSSession -eq $null) {
+    Write-Error "login!"
+  }
+  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
+  $uri = $CWSSession.Uri
 
 $headers = @{SOAPAction="http://cherwellsoftware.com/QueryByFieldValue"}
 $response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -WebSession $sess -Body @"
@@ -100,7 +143,7 @@ $xDeepChildren |
 } #the end
 
 
-function Find-CherwellObjectUsingQuery {
+function Invoke-CWSStoredQuery {
 <#
 .SYNOPSIS
 Find a business object using a query as defined in the Search Manager.
@@ -114,14 +157,14 @@ param
 
   [Parameter(Mandatory=$True)]
   [Alias('Query')]
-  [String] $QueryName,
-
-  [Parameter(Mandatory=$True)]
-  $Session
+  [String] $QueryName
 )
 begin {
-  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $Session.session
-  $uri = $session.uri
+  if ($CWSSession -eq $null) {
+    Write-Error "login!"
+  }
+  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
+  $uri = $CWSSession.uri
 
 $headers = @{SOAPAction="http://cherwellsoftware.com/QueryByStoredQuery"}
 $response = Invoke-WebRequest -uri $uri -Method POST -Headers $headers -ContentType "text/xml" -WebSession $sess -Body @"
@@ -147,9 +190,10 @@ $xDeepChildren = $xDeepResponse | Select-Xml("/*/*")
 $xDeepChildren |
   % {
     New-Object -TypeName PSObject -Prop @{
-      'ID'=$_.Node."#text";
-      'RecordID'=$_.Node.RecId;
+      'Type'=$BusinessObject;
       'TypeID'=$_.Node.TypeId;
+      'RecID'=$_.Node.RecId;
+      'PublicID'=$_.Node.TitleText;
     }
   }
 
@@ -158,7 +202,7 @@ $xDeepChildren |
 } #the end
 
 
-function Get-CherwellObject {
+function Get-CWSBusinessObject {
 <#
 .SYNOPSIS
 Get exactly one Cherwell business object based on its globally unique record ID.
@@ -172,14 +216,14 @@ param
   [String] $BusinessObject = "Incident",
 
   [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)]
-  [String] $RecordID,
-
-  [Parameter(Mandatory=$True)]
-  $Session
+  [String] $RecordID
 )
 begin {
-  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $Session.session
-  $uri = $session.uri
+  if ($CWSSession -eq $null) {
+    Write-Error "login!"
+  }
+  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
+  $uri = $CWSSession.uri
 }
 process {
 
@@ -213,20 +257,3 @@ $r
 
 }
 } #the end
-
-
-
-$s = Open-CherwellSession -Username $username -Password $password -Server support.unbc.ca
-# TODO should probably close (logout) all the sessions we open
-#Find-CherwellObject -BusinessObject "Incident" -FieldName "Status" -Value "Assigned" -Session $s
-#Find-CherwellObject -BusinessObject "Incident" -FieldName "Short Description" -Value "prt302 and paper selection" -Session $s
-#Find-CherwellObject -FieldName "Status" -Value "New" -Session $s
-#Find-CherwellObject -BusinessObject "Incident" -FieldName "Status" -Value "Assigned" -Session $s |
-
-Find-CherwellObjectUsingQuery -Query "My Open Tickets" -Session $s |
-  Get-CherwellObject -BusinessObject "Incident" -Session $s |
-# Format-Table IncidentID,Service,Category,ShortDescription -Auto
-  Select -Expand CreatedDateTime |
-  % { ((get-date) - (get-date $_)).totalHours } |
-  Measure -Sum |
-  Select -Expand Sum
