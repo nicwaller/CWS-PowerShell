@@ -255,3 +255,46 @@ $r
 
 }
 } #the end
+
+function Add-CWSBusinessObjectToMajorIncident {
+<#
+.SYNOPSIS
+Link a business object with a pre-existing Major Incident.
+#>
+[CmdletBinding()]
+param
+(
+  [Alias('BusOb')]
+  [ValidateSet("Problem","Incident","Customer","Task","Service")]
+  [String] $BusinessObject = "Incident",
+
+  [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)]
+  [String] $IncidentID,
+
+  [Parameter(Mandatory=$true)]
+  [String] $MajorIncidentID
+)
+begin {
+  if ($CWSSession -eq $null) {
+    Write-Error "login!"
+  }
+  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
+  $uri = $CWSSession.uri
+
+  Add-Type -AssemblyName System.Web
+}
+process {
+  $updateXml = @"
+<BusinessObject Name="Incident">
+ <FieldList>
+  <Field Name="MajorIncidentID">${MajorIncidentID}</Field>
+ </FieldList>
+</BusinessObject>
+"@
+
+  $updateEncoded = [System.Web.HttpUtility]::HtmlEncode($updateXml)
+
+  $result = Invoke-CWSRequest -Action UpdateBusinessObjectByPublicId -Arguments @{'busObNameOrId'=$BusinessObject;'busObPublicId'=$IncidentID;'updateXml'=$updateEncoded}
+  $result
+}
+} #the end
