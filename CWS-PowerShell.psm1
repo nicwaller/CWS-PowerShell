@@ -1,5 +1,6 @@
 Set-StrictMode -version 2
 
+#TODO write another wrapper like this one specifically for update requests
 function Invoke-CWSRequest {
 <#
 .SYNOPSIS
@@ -44,8 +45,11 @@ begin {
     'Body'=$ExecutionContext.InvokeCommand.ExpandString($SoapTemplate)
   }
 
+#write-host $ExecutionContext.InvokeCommand.ExpandString($SoapTemplate)
+
   $Result = Invoke-WebRequest @RequestParams
   Write-Output (([xml]$Result.Content) | Select-Xml("/*/*/*/*")).Node."#text"
+#write-host $result.content
 }
 } # end
 
@@ -246,6 +250,7 @@ if ($xDeepResponse -eq $null) {
 }
 
 $r = New-Object -TypeName PSObject
+#$r | Add-Member -MemberType NoteProperty -Name "XML" -Value $result
 $xDeepResponse |
   Select-Xml("/BusinessObject/FieldList/Field") |
   Where-Object {$_.Node.PSObject.Properties.Match('#text').Count} |
@@ -280,8 +285,6 @@ begin {
   }
   [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
   $uri = $CWSSession.uri
-
-  Add-Type -AssemblyName System.Web
 }
 process {
   $updateXml = @"
@@ -291,10 +294,118 @@ process {
  </FieldList>
 </BusinessObject>
 "@
+#  <Field Name="MajorIncidentID">109039</Field>
+
+  Add-Type -AssemblyName System.Web
+  $updateEncoded = [System.Web.HttpUtility]::HtmlEncode($updateXml)
+
+  $result = Invoke-CWSRequest -Action UpdateBusinessObjectByPublicId -Arguments @{'busObNameOrId'=$BusinessObject;'busObPublicId'=$IncidentID;'updateXml'=$updateEncoded}
+  $result
+}
+} #the end
+
+function Set-CWSIncidentOwner {
+<#
+.SYNOPSIS
+Close it.
+#>
+[CmdletBinding()]
+param
+(
+  [Alias('BusOb')]
+  [ValidateSet("Problem","Incident","Customer","Task","Service")]
+  [String] $BusinessObject = "Incident",
+
+  [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)]
+  [String] $IncidentID,
+
+  [Parameter(Mandatory=$true)]
+  [String] $OwnedByTeam,
+  #eg. infrastructure
+
+  [Parameter(Mandatory=$true)]
+  [String] $OwnedById,
+  #eg. 93ede916c9c752e260978b4fe6ad6494bd0c8134c8
+
+  [Parameter(Mandatory=$true)]
+  [String] $OwnedBy
+  #eg. Nicholas Waller
+
+  #TODO: would be nice to have -passthru to also close an incident here
+)
+begin {
+  if ($CWSSession -eq $null) {
+    Write-Error "login!"
+  }
+  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
+  $uri = $CWSSession.uri
+
+  Add-Type -AssemblyName System.Web
+}
+process {
+# FIXME this transformation needs to be applied twice to take effect. why?
+# maybe team must be set first in a separate transaction
+# Field 'OwnedByTeam' MUST come first! otherwise it requires two commits.
+  $updateXml = @"
+<BusinessObject Name="Incident">
+ <FieldList>
+  <Field Name="OwnedByTeam">${OwnedByTeam}</Field>
+  <Field Name="OwnedById">${OwnedById}</Field>
+  <Field Name="OwnedBy">${OwnedBy}</Field>
+ </FieldList>
+</BusinessObject>
+"@
 
   $updateEncoded = [System.Web.HttpUtility]::HtmlEncode($updateXml)
 
   $result = Invoke-CWSRequest -Action UpdateBusinessObjectByPublicId -Arguments @{'busObNameOrId'=$BusinessObject;'busObPublicId'=$IncidentID;'updateXml'=$updateEncoded}
+  if ($result -eq 'false') {
+    write-error (Invoke-CWSRequest -Action GetLastError)
+  }
+  $result
+}
+} #the end
+
+function Close-CWSBusinessObject {
+<#
+.SYNOPSIS
+Close it.
+#>
+[CmdletBinding()]
+param
+(
+  [Alias('BusOb')]
+  [ValidateSet("Problem","Incident","Customer","Task","Service")]
+  [String] $BusinessObject = "Incident",
+
+  [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)]
+  [String] $IncidentID
+)
+begin {
+  if ($CWSSession -eq $null) {
+    Write-Error "login!"
+  }
+  [Microsoft.PowerShell.Commands.WebRequestSession] $sess = $CWSSession.SOAPSession
+  $uri = $CWSSession.uri
+
+  Add-Type -AssemblyName System.Web
+}
+process {
+#omg seriously, the ownership fields must be in order for execution to proceed????
+  $updateXml = @"
+<BusinessObject Name="Incident">
+ <FieldList>
+  <Field Name="Status">Resolved</Field>
+ </FieldList>
+</BusinessObject>
+"@
+
+  $updateEncoded = [System.Web.HttpUtility]::HtmlEncode($updateXml)
+
+  $result = Invoke-CWSRequest -Action UpdateBusinessObjectByPublicId -Arguments @{'busObNameOrId'=$BusinessObject;'busObPublicId'=$IncidentID;'updateXml'=$updateEncoded}
+  if ($result -eq 'false') {
+    write-error (Invoke-CWSRequest -Action GetLastError)
+  }
   $result
 }
 } #the end
